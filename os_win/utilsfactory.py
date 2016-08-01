@@ -23,15 +23,8 @@ from os_win.utils import hostutils
 from os_win.utils.io import namedpipe
 from os_win.utils.storage.initiator import iscsi_cli_utils
 
-hyper_opts = [
-    cfg.BoolOpt('force_volumeutils_v1',
-                default=False,
-                help='DEPRECATED: Force V1 volume utility class',
-                deprecated_for_removal=True),
-]
 
 CONF = cfg.CONF
-CONF.register_opts(hyper_opts, 'hyperv')
 
 LOG = logging.getLogger(__name__)
 
