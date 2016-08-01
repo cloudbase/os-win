@@ -24,6 +24,7 @@ if sys.platform == 'win32':
     kernel32 = ctypes.windll.kernel32
 
 from oslo_log import log as logging
+from nova.openstack.common import fileutils
 import six
 
 from os_win._i18n import _
