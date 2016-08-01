@@ -20,8 +20,8 @@ import shutil
 import sys
 import tempfile
 
+from nova.openstack.common import fileutils
 from oslo_log import log as logging
-from oslo_utils import fileutils
 import six
 
 from os_win._i18n import _
