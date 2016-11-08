@@ -203,10 +203,11 @@ class ISCSIInitiatorUtils(object):
     def _get_iscsi_target_sessions(self, target_name, connected_only=True):
         sessions = self._get_iscsi_sessions()
         return [session for session in sessions
-                if session.TargetNodeName == target_name
-                and (session.ConnectionCount > 0 or not connected_only)]
+                if session.TargetNodeName.upper() == target_name.upper() and
+                (session.ConnectionCount > 0 or not connected_only)]
 
-    @retry_decorator(error_codes=iscsierr.ISDSC_SESSION_BUSY)
+    @retry_decorator(error_codes=(iscsierr.ISDSC_SESSION_BUSY,
+                                  iscsierr.ISDSC_DEVICE_BUSY_ON_SESSION))
     @ensure_buff_and_retrieve_items(
         struct_type=iscsi_struct.ISCSI_DEVICE_ON_SESSION,
         func_requests_buff_sz=False)
