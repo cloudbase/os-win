@@ -29,6 +29,22 @@ from os_win import exceptions
 from os_win.utils.storage.initiator import fc_structures as fc_struct
 from os_win.utils import win32utils
 
+from oslo_config import cfg
+
+os_win_opts = [
+    cfg.StrOpt('hbaapi_lib_path',
+               default='hbaapi.dll',
+               help='Fibre Channel hbaapi library path. If no custom hbaapi '
+                    'library is requested, the default Microsoft one will '
+                    'be used.'),
+]
+
+CONF = cfg.CONF
+CONF.register_opts(os_win_opts, 'os_win')
+
+if sys.platform == 'win32':
+    hbaapi = ctypes.cdll.LoadLibrary(CONF.os_win.hbaapi_lib_path)
+
 LOG = logging.getLogger(__name__)
 
 HBA_STATUS_OK = 0
