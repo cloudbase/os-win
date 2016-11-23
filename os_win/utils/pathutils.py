@@ -20,7 +20,6 @@ import shutil
 import sys
 import tempfile
 
-from nova.openstack.common import fileutils
 from oslo_log import log as logging
 import six
 
@@ -170,8 +169,8 @@ class PathUtils(object):
             tmp_file_path = self.create_temporary_file(suffix, *args, **kwargs)
             yield tmp_file_path
         finally:
-            if tmp_file_path:
-                fileutils.delete_if_exists(tmp_file_path)
+            if tmp_file_path and self.exists(tmp_file_path):
+                self.remove(tmp_file_path)
 
     def add_acl_rule(self, path, trustee_name,
                      access_rights, access_mode,
