@@ -223,6 +223,8 @@ class ClusterUtils(baseutils.BaseUtils):
                                                    dest_node_handle,
                                                    flags,
                                                    prop_list)
+            # TODO(alexpilotti): this is a quick hack, must be configurable
+            timeout = 60
             self._wait_for_cluster_group_state(vm_name,
                                                group_handle,
                                                exp_state_after_migr,
@@ -255,7 +257,6 @@ class ClusterUtils(baseutils.BaseUtils):
 
             if not (reached_desired_state and reached_desired_node):
                 valid_state = group_state in valid_transition_states
-                retry_context['prevent_retry'] = not valid_state
 
                 raise exceptions.InvalidClusterGroupState(
                     group_name=group_name,

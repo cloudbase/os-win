@@ -64,7 +64,6 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
     _DEFINE_SYSTEM = 'DefineSystem'
     _DESTROY_SYSTEM = 'DestroySystem'
     _DESTROY_SNAPSHOT = 'DestroySnapshot'
-    _SETTING_TYPE = 'VirtualSystemType'
     _VM_GEN = constants.VM_GEN_2
 
     _VIRTUAL_SYSTEM_TYPE_REALIZED = 'Microsoft:Hyper-V:System:Realized'
@@ -119,11 +118,15 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
                           as_vssd=False)
 
     def test_lookup_vm_as_vssd(self):
+        vssd = mock.MagicMock()
+        expected_vssd = mock.MagicMock(
+            VirtualSystemType=self._vmutils._VIRTUAL_SYSTEM_TYPE_REALIZED)
+
         self._vmutils._conn.Msvm_VirtualSystemSettingData.return_value = [
-            mock.sentinel.fake_vssd]
+            vssd, expected_vssd]
 
         vssd = self._vmutils._lookup_vm_check(self._FAKE_VM_NAME)
-        self.assertEqual(mock.sentinel.fake_vssd, vssd)
+        self.assertEqual(expected_vssd, vssd)
 
     def test_set_vm_memory_static(self):
         self._test_set_vm_memory_dynamic(dynamic_memory_ratio=1.0)
@@ -218,40 +221,27 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
 
     @mock.patch.object(vmutils.VMUtils, '_get_vm_disks')
     @mock.patch.object(vmutils.VMUtils, '_lookup_vm_check')
-    @mock.patch.object(vmutils.VMUtils, '_get_virtual_system_type')
-    def test_get_vm_storage_paths(self, mock_get_virtual_system_type,
-                                  mock_lookup_vm_check, mock_get_vm_disks):
-        virtual_system_type = mock_get_virtual_system_type.return_value
+    def test_get_vm_storage_paths(self, mock_lookup_vm_check,
+                                  mock_get_vm_disks):
         mock_rasds = self._create_mock_disks()
         mock_get_vm_disks.return_value = ([mock_rasds[0]], [mock_rasds[1]])
 
-        storage = self._vmutils.get_vm_storage_paths(
-            self._FAKE_VM_NAME,
-            is_planned_vm=False)
+        storage = self._vmutils.get_vm_storage_paths(self._FAKE_VM_NAME)
         (disk_files, volume_drives) = storage
 
         self.assertEqual([self._FAKE_VHD_PATH], disk_files)
         self.assertEqual([self._FAKE_VOLUME_DRIVE_PATH], volume_drives)
-        mock_get_virtual_system_type.assert_called_once_with(False)
-        mock_lookup_vm_check.assert_called_once_with(
-            self._FAKE_VM_NAME, virtual_system_type=virtual_system_type)
+        mock_lookup_vm_check.assert_called_once_with(self._FAKE_VM_NAME)
 
     @mock.patch.object(vmutils.VMUtils, '_get_vm_disks')
-    @mock.patch.object(vmutils.VMUtils, '_get_virtual_system_type')
-    def test_get_vm_disks_by_instance_name(self,
-                                           mock_get_virtual_system_type,
-                                           mock_get_vm_disks):
-        virtual_system_type = mock_get_virtual_system_type.return_value
+    def test_get_vm_disks_by_instance_name(self, mock_get_vm_disks):
         self._lookup_vm()
         mock_get_vm_disks.return_value = mock.sentinel.vm_disks
 
-        vm_disks = self._vmutils.get_vm_disks(
-            self._FAKE_VM_NAME, is_planned_vm=False)
+        vm_disks = self._vmutils.get_vm_disks(self._FAKE_VM_NAME)
 
-        mock_get_virtual_system_type.assert_called_once_with(False)
         self._vmutils._lookup_vm_check.assert_called_once_with(
-            self._FAKE_VM_NAME,
-            virtual_system_type=virtual_system_type)
+            self._FAKE_VM_NAME)
         self.assertEqual(mock.sentinel.vm_disks, vm_disks)
 
     @mock.patch.object(_wqlutils, 'get_element_associated_class')
@@ -299,9 +289,8 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
                           self._vmutils.check_admin_permissions)
 
     @ddt.data(
+        {'vnuma_enabled': mock.sentinel.vnuma_enabled},
         {'configuration_root_dir': mock.sentinel.configuration_root_dir},
-        {'snapshot_dir': mock.sentinel.snapshot_dir, 'is_planned_vm': True},
-        {'is_planned_vm': True},
         {'host_shutdown_action': mock.sentinel.shutdown_action},
         {})
     @ddt.unpack
@@ -309,34 +298,45 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
     @mock.patch.object(vmutils.VMUtils, '_set_vm_vcpus')
     @mock.patch.object(vmutils.VMUtils, '_set_vm_memory')
     @mock.patch.object(vmutils.VMUtils, '_lookup_vm_check')
-    @mock.patch.object(vmutils.VMUtils, '_get_virtual_system_type')
-    def test_update_vm(self, mock_get_virtual_system_type,
-                       mock_lookup_vm_check, mock_set_mem, mock_set_vcpus,
-                       mock_modify_virtual_system,
+    def test_update_vm(self, mock_lookup_vm_check, mock_set_mem,
+                       mock_set_vcpus, mock_modify_virtual_system,
                        host_shutdown_action=None,
-                       configuration_root_dir=None,
-                       snapshot_dir=None, is_planned_vm=False):
+                       configuration_root_dir=None, vnuma_enabled=None):
         mock_vmsettings = mock_lookup_vm_check.return_value
-        virtual_system_type = mock_get_virtual_system_type.return_value
         self._vmutils.update_vm(
             mock.sentinel.vm_name, mock.sentinel.memory_mb,
             mock.sentinel.memory_per_numa, mock.sentinel.vcpus_num,
             mock.sentinel.vcpus_per_numa, mock.sentinel.limit_cpu_features,
             mock.sentinel.dynamic_mem_ratio, configuration_root_dir,
-            snapshot_dir,
             host_shutdown_action=host_shutdown_action,
-            is_planned_vm=is_planned_vm)
+            vnuma_enabled=vnuma_enabled)
 
-        mock_get_virtual_system_type.assert_called_once_with(is_planned_vm)
-        mock_lookup_vm_check.assert_called_once_with(
-            mock.sentinel.vm_name, virtual_system_type=virtual_system_type)
+        mock_lookup_vm_check.assert_called_once_with(mock.sentinel.vm_name)
         mock_set_mem.assert_called_once_with(
             mock_vmsettings, mock.sentinel.memory_mb,
             mock.sentinel.memory_per_numa, mock.sentinel.dynamic_mem_ratio)
         mock_set_vcpus.assert_called_once_with(
             mock_vmsettings, mock.sentinel.vcpus_num,
             mock.sentinel.vcpus_per_numa, mock.sentinel.limit_cpu_features)
-        if (configuration_root_dir or snapshot_dir or host_shutdown_action):
+
+        if configuration_root_dir:
+            self.assertEqual(configuration_root_dir,
+                             mock_vmsettings.ConfigurationDataRoot)
+            self.assertEqual(configuration_root_dir,
+                             mock_vmsettings.LogDataRoot)
+            self.assertEqual(configuration_root_dir,
+                             mock_vmsettings.SnapshotDataRoot)
+            self.assertEqual(configuration_root_dir,
+                             mock_vmsettings.SuspendDataRoot)
+            self.assertEqual(configuration_root_dir,
+                             mock_vmsettings.SwapFileDataRoot)
+        if host_shutdown_action:
+            self.assertEqual(host_shutdown_action,
+                             mock_vmsettings.AutomaticShutdownAction)
+        if vnuma_enabled:
+            self.assertEqual(vnuma_enabled, mock_vmsettings.VirtualNumaEnabled)
+
+        if configuration_root_dir or host_shutdown_action or vnuma_enabled:
             mock_modify_virtual_system.assert_called_once_with(
                 mock_vmsettings)
         else:
@@ -360,13 +360,10 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
     @mock.patch.object(vmutils.VMUtils, '_set_vm_vcpus')
     @mock.patch.object(vmutils.VMUtils, '_set_vm_memory')
     def test_old_create_vm(self, mock_set_mem, mock_set_vcpus):
+        mock_vmsetting = self._lookup_vm()
         mock_svc = self._vmutils._vs_man_svc
         getattr(mock_svc, self._DEFINE_SYSTEM).return_value = (
             None, self._FAKE_JOB_PATH, self._FAKE_RET_VAL)
-
-        mock_vmsetting = mock.MagicMock()
-        self._vmutils._conn.Msvm_VirtualSystemSettingData.return_value = [
-            mock_vmsetting]
 
         self._vmutils.create_vm(self._FAKE_VM_NAME, self._FAKE_MEMORY_MB,
                                 self._FAKE_VCPUS_NUM, False,
@@ -582,11 +579,9 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
 
         mock_get_vm_disks.return_value = ([], [mock_phys_disk])
 
-        result = self._vmutils.get_vm_physical_disk_mapping(
-            self._FAKE_VM_NAME, is_planned_vm=False)
+        result = self._vmutils.get_vm_physical_disk_mapping(self._FAKE_VM_NAME)
         self.assertEqual(expected_mapping, result)
-        mock_get_vm_disks.assert_called_once_with(
-            self._FAKE_VM_NAME, is_planned_vm=False)
+        mock_get_vm_disks.assert_called_once_with(self._FAKE_VM_NAME)
 
     @mock.patch.object(vmutils.VMUtils, '_get_wmi_obj')
     def test_set_disk_host_res(self, mock_get_wmi_obj):
@@ -1215,12 +1210,51 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
                           self._vmutils._validate_remotefx_params,
                           1, '1024x700')
 
+    @ddt.data(True, False)
+    @mock.patch.object(vmutils.VMUtils, '_set_remotefx_vram')
+    @mock.patch.object(vmutils.VMUtils, '_get_new_resource_setting_data')
+    def test_set_remotefx_display_controller(self, new_obj, mock_get_new_rsd,
+                                             mock_set_remotefx_vram):
+        if new_obj:
+            remotefx_ctrl_res = None
+            expected_res = mock_get_new_rsd.return_value
+        else:
+            remotefx_ctrl_res = mock.MagicMock()
+            expected_res = remotefx_ctrl_res
+
+        self._vmutils._set_remotefx_display_controller(
+            mock.sentinel.fake_vm, remotefx_ctrl_res,
+            mock.sentinel.monitor_count, mock.sentinel.max_resolution,
+            mock.sentinel.vram_bytes)
+
+        self.assertEqual(mock.sentinel.monitor_count,
+                         expected_res.MaximumMonitors)
+        self.assertEqual(mock.sentinel.max_resolution,
+                         expected_res.MaximumScreenResolution)
+        mock_set_remotefx_vram.assert_called_once_with(
+            expected_res, mock.sentinel.vram_bytes)
+
+        if new_obj:
+            mock_get_new_rsd.assert_called_once_with(
+                self._vmutils._REMOTEFX_DISP_CTRL_RES_SUB_TYPE,
+                self._vmutils._REMOTEFX_DISP_ALLOCATION_SETTING_DATA_CLASS)
+            self._vmutils._jobutils.add_virt_resource.assert_called_once_with(
+                expected_res, mock.sentinel.fake_vm)
+        else:
+            self.assertFalse(mock_get_new_rsd.called)
+            modify_virt_res = self._vmutils._jobutils.modify_virt_resource
+            modify_virt_res.assert_called_once_with(expected_res)
+
+    def test_set_remotefx_vram(self):
+        self._vmutils._set_remotefx_vram(mock.sentinel.remotefx_ctrl_res,
+                                         mock.sentinel.vram_bytes)
+
     @mock.patch.object(_wqlutils, 'get_element_associated_class')
-    @mock.patch.object(vmutils.VMUtils, '_add_3d_display_controller')
+    @mock.patch.object(vmutils.VMUtils, '_set_remotefx_display_controller')
     @mock.patch.object(vmutils.VMUtils, '_vm_has_s3_controller')
     def test_enable_remotefx_video_adapter(self,
                                            mock_vm_has_s3_controller,
-                                           mock_add_3d_ctrl,
+                                           mock_set_remotefx_ctrl,
                                            mock_get_element_associated_class):
         mock_vm = self._lookup_vm()
 
@@ -1240,12 +1274,12 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
         mock_get_element_associated_class.assert_called_once_with(
             self._vmutils._conn,
             self._vmutils._CIM_RES_ALLOC_SETTING_DATA_CLASS,
-            element_uuid=mock_vm.Name)
+            element_instance_id=mock_vm.InstanceID)
         self._vmutils._jobutils.remove_virt_resource.assert_called_once_with(
             mock_r1)
 
-        mock_add_3d_ctrl.assert_called_once_with(
-            mock_vm, self._FAKE_MONITOR_COUNT,
+        mock_set_remotefx_ctrl.assert_called_once_with(
+            mock_vm, None, self._FAKE_MONITOR_COUNT,
             self._vmutils._remote_fx_res_map[
                 constants.REMOTEFX_MAX_RES_1024x768],
             None)
@@ -1255,24 +1289,53 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
         self.assertEqual(self._vmutils._DISP_CTRL_ADDRESS_DX_11,
                          mock_r2.Address)
 
+    @mock.patch.object(vmutils.VMUtils, '_vm_has_s3_controller')
+    @mock.patch.object(vmutils.VMUtils, '_get_new_resource_setting_data')
     @mock.patch.object(_wqlutils, 'get_element_associated_class')
-    def test_enable_remotefx_video_adapter_already_configured(
-            self, mock_get_element_associated_class):
+    def test_disable_remotefx_video_adapter(self,
+                                            mock_get_element_associated_class,
+                                            mock_get_new_rsd,
+                                            mock_vm_has_s3_controller):
         mock_vm = self._lookup_vm()
+        mock_r1 = mock.MagicMock(
+            ResourceSubType=self._vmutils._REMOTEFX_DISP_CTRL_RES_SUB_TYPE)
+        mock_r2 = mock.MagicMock(
+            ResourceSubType=self._vmutils._S3_DISP_CTRL_RES_SUB_TYPE)
 
-        mock_r = mock.MagicMock()
-        mock_r.ResourceSubType = self._vmutils._SYNTH_3D_DISP_CTRL_RES_SUB_TYPE
+        mock_get_element_associated_class.return_value = [mock_r1, mock_r2]
 
-        mock_get_element_associated_class.return_value = [mock_r]
+        self._vmutils.disable_remotefx_video_adapter(
+            mock.sentinel.fake_vm_name)
 
-        self.assertRaises(exceptions.HyperVRemoteFXException,
-                          self._vmutils.enable_remotefx_video_adapter,
-                          mock.sentinel.fake_vm_name, self._FAKE_MONITOR_COUNT,
-                          constants.REMOTEFX_MAX_RES_1024x768)
         mock_get_element_associated_class.assert_called_once_with(
             self._vmutils._conn,
             self._vmutils._CIM_RES_ALLOC_SETTING_DATA_CLASS,
-            element_uuid=mock_vm.Name)
+            element_instance_id=mock_vm.InstanceID)
+        self._vmutils._jobutils.remove_virt_resource.assert_called_once_with(
+            mock_r1)
+        mock_get_new_rsd.assert_called_once_with(
+            self._vmutils._SYNTH_DISP_CTRL_RES_SUB_TYPE,
+            self._vmutils._SYNTH_DISP_ALLOCATION_SETTING_DATA_CLASS)
+        self._vmutils._jobutils.add_virt_resource.assert_called_once_with(
+            mock_get_new_rsd.return_value, mock_vm)
+        self._vmutils._jobutils.modify_virt_resource.assert_called_once_with(
+            mock_r2)
+        self.assertEqual(self._vmutils._DISP_CTRL_ADDRESS, mock_r2.Address)
+
+    @mock.patch.object(_wqlutils, 'get_element_associated_class')
+    def test_disable_remotefx_video_adapter_not_found(
+            self, mock_get_element_associated_class):
+        mock_vm = self._lookup_vm()
+        mock_get_element_associated_class.return_value = []
+
+        self._vmutils.disable_remotefx_video_adapter(
+            mock.sentinel.fake_vm_name)
+
+        mock_get_element_associated_class.assert_called_once_with(
+            self._vmutils._conn,
+            self._vmutils._CIM_RES_ALLOC_SETTING_DATA_CLASS,
+            element_instance_id=mock_vm.InstanceID)
+        self.assertFalse(self._vmutils._jobutils.remove_virt_resource.called)
 
     @mock.patch.object(vmutils.VMUtils, 'get_vm_generation')
     def test_vm_has_s3_controller(self, mock_get_vm_generation):
@@ -1291,12 +1354,3 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
         self._vmutils._jobutils.modify_virt_resource.assert_called_once_with(
             disk_resource)
         self.assertEqual(disk_resource.HostResource, [mock.sentinel.new_path])
-
-    @ddt.data(True, False)
-    def test_get_virtual_system_type(self, is_planned_vm):
-        exp_result = (
-            self._vmutils._VIRTUAL_SYSTEM_TYPE_PLANNED if is_planned_vm
-            else self._vmutils._VIRTUAL_SYSTEM_TYPE_REALIZED)
-        actual_result = self._vmutils._get_virtual_system_type(
-            is_planned_vm=is_planned_vm)
-        self.assertEqual(exp_result, actual_result)

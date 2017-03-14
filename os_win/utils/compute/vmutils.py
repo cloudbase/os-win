@@ -42,6 +42,9 @@ from os_win.utils import pathutils
 
 LOG = logging.getLogger(__name__)
 
+# TODO(claudiub): remove the is_planned_vm argument from methods once it is not
+# used  anymore.
+
 
 class VMUtils(baseutils.BaseUtilsVirt):
 
@@ -72,9 +75,11 @@ class VMUtils(baseutils.BaseUtilsVirt):
     _S3_DISP_CTRL_RES_SUB_TYPE = 'Microsoft:Hyper-V:S3 Display Controller'
     _SYNTH_DISP_CTRL_RES_SUB_TYPE = ('Microsoft:Hyper-V:Synthetic Display '
                                      'Controller')
-    _SYNTH_3D_DISP_CTRL_RES_SUB_TYPE = ('Microsoft:Hyper-V:Synthetic 3D '
+    _REMOTEFX_DISP_CTRL_RES_SUB_TYPE = ('Microsoft:Hyper-V:Synthetic 3D '
                                         'Display Controller')
-    _SYNTH_3D_DISP_ALLOCATION_SETTING_DATA_CLASS = (
+    _SYNTH_DISP_ALLOCATION_SETTING_DATA_CLASS = (
+        'Msvm_SyntheticDisplayControllerSettingData')
+    _REMOTEFX_DISP_ALLOCATION_SETTING_DATA_CLASS = (
         'Msvm_Synthetic3DDisplayControllerSettingData')
 
     _VIRTUAL_SYSTEM_SUBTYPE = 'VirtualSystemSubType'
@@ -109,6 +114,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
     }
 
     _DISP_CTRL_ADDRESS_DX_11 = "02C1,00000000,01"
+    _DISP_CTRL_ADDRESS = "5353,00000000,00"
 
     _vm_power_states_map = {constants.HYPERV_VM_STATE_ENABLED: 2,
                             constants.HYPERV_VM_STATE_DISABLED: 3,
@@ -191,21 +197,19 @@ class VMUtils(baseutils.BaseUtilsVirt):
         settings = self.get_vm_summary_info(vm_name)
         return settings['EnabledState']
 
-    def _lookup_vm_check(self, vm_name, as_vssd=True, for_update=False,
-                         virtual_system_type=_VIRTUAL_SYSTEM_TYPE_REALIZED):
-        vm = self._lookup_vm(vm_name, as_vssd, for_update,
-                             virtual_system_type)
+    def _lookup_vm_check(self, vm_name, as_vssd=True, for_update=False):
+        vm = self._lookup_vm(vm_name, as_vssd, for_update)
         if not vm:
             raise exceptions.HyperVVMNotFoundException(vm_name=vm_name)
         return vm
 
-    def _lookup_vm(self, vm_name, as_vssd=True, for_update=False,
-                   virtual_system_type=_VIRTUAL_SYSTEM_TYPE_REALIZED):
+    def _lookup_vm(self, vm_name, as_vssd=True, for_update=False):
         if as_vssd:
             conn = self._compat_conn if for_update else self._conn
-            vms = conn.Msvm_VirtualSystemSettingData(
-                ElementName=vm_name,
-                VirtualSystemType=virtual_system_type)
+            vms = conn.Msvm_VirtualSystemSettingData(ElementName=vm_name)
+            vms = [v for v in vms if
+                   v.VirtualSystemType in [self._VIRTUAL_SYSTEM_TYPE_PLANNED,
+                                           self._VIRTUAL_SYSTEM_TYPE_REALIZED]]
         else:
             vms = self._conn.Msvm_ComputerSystem(ElementName=vm_name)
         n = len(vms)
@@ -273,26 +277,31 @@ class VMUtils(baseutils.BaseUtilsVirt):
     def update_vm(self, vm_name, memory_mb, memory_per_numa_node, vcpus_num,
                   vcpus_per_numa_node, limit_cpu_features, dynamic_mem_ratio,
                   configuration_root_dir=None, snapshot_dir=None,
-                  host_shutdown_action=None,
+                  host_shutdown_action=None, vnuma_enabled=None,
                   is_planned_vm=False):
-        virtual_system_type = self._get_virtual_system_type(is_planned_vm)
-
-        vmsetting = self._lookup_vm_check(
-            vm_name, virtual_system_type=virtual_system_type)
+        vmsetting = self._lookup_vm_check(vm_name)
 
         if host_shutdown_action:
             vmsetting.AutomaticShutdownAction = host_shutdown_action
         if configuration_root_dir:
+            # Created VMs must have their *DataRoot paths in the same location
+            # as the VM's path.
             vmsetting.ConfigurationDataRoot = configuration_root_dir
-        if snapshot_dir:
-            vmsetting.SnapshotDataRoot = snapshot_dir
+            vmsetting.LogDataRoot = configuration_root_dir
+            vmsetting.SnapshotDataRoot = configuration_root_dir
+            vmsetting.SuspendDataRoot = configuration_root_dir
+            vmsetting.SwapFileDataRoot = configuration_root_dir
+        if vnuma_enabled is not None:
+            vmsetting.VirtualNumaEnabled = vnuma_enabled
+
         self._set_vm_memory(vmsetting, memory_mb, memory_per_numa_node,
                             dynamic_mem_ratio)
         self._set_vm_vcpus(vmsetting, vcpus_num, vcpus_per_numa_node,
                            limit_cpu_features)
 
-        update_needed = (configuration_root_dir or snapshot_dir or
-                         host_shutdown_action)
+        update_needed = (configuration_root_dir or host_shutdown_action or
+                         vnuma_enabled is not None)
+
         if update_needed:
             self._modify_virtual_system(vmsetting)
 
@@ -513,7 +522,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
     def get_vm_physical_disk_mapping(self, vm_name, is_planned_vm=False):
         mapping = {}
         physical_disks = (
-            self.get_vm_disks(vm_name, is_planned_vm=is_planned_vm)[1])
+            self.get_vm_disks(vm_name)[1])
         for diskdrive in physical_disks:
             mapping[diskdrive.ElementName] = dict(
                 resource_path=diskdrive.path_(),
@@ -623,10 +632,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
         return vmsettings.ConfigurationDataRoot
 
     def get_vm_storage_paths(self, vm_name, is_planned_vm=False):
-        virtual_system_type = self._get_virtual_system_type(is_planned_vm)
-        vmsettings = self._lookup_vm_check(
-            vm_name,
-            virtual_system_type=virtual_system_type)
+        vmsettings = self._lookup_vm_check(vm_name)
         (disk_resources, volume_resources) = self._get_vm_disks(vmsettings)
 
         volume_drives = []
@@ -642,9 +648,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
         return (disk_files, volume_drives)
 
     def get_vm_disks(self, vm_name, is_planned_vm=False):
-        virtual_system_type = self._get_virtual_system_type(is_planned_vm)
-        vmsettings = self._lookup_vm_check(
-            vm_name, virtual_system_type=virtual_system_type)
+        vmsettings = self._lookup_vm_check(vm_name)
         return self._get_vm_disks(vmsettings)
 
     def _get_vm_disks(self, vmsettings):
@@ -1061,44 +1065,86 @@ class VMUtils(baseutils.BaseUtilsVirt):
                    'max_monitors':
                    self._remotefx_max_monitors_map[max_resolution]})
 
-    def _add_3d_display_controller(self, vm, monitor_count,
-                                   max_resolution, vram_bytes=None):
-        synth_3d_disp_ctrl_res = self._get_new_resource_setting_data(
-            self._SYNTH_3D_DISP_CTRL_RES_SUB_TYPE,
-            self._SYNTH_3D_DISP_ALLOCATION_SETTING_DATA_CLASS)
+    def _set_remotefx_display_controller(self, vm, remotefx_disp_ctrl_res,
+                                         monitor_count, max_resolution,
+                                         vram_bytes=None):
+        new_wmi_obj = False
+        if not remotefx_disp_ctrl_res:
+            new_wmi_obj = True
+            remotefx_disp_ctrl_res = self._get_new_resource_setting_data(
+                self._REMOTEFX_DISP_CTRL_RES_SUB_TYPE,
+                self._REMOTEFX_DISP_ALLOCATION_SETTING_DATA_CLASS)
 
-        synth_3d_disp_ctrl_res.MaximumMonitors = monitor_count
-        synth_3d_disp_ctrl_res.MaximumScreenResolution = max_resolution
+        remotefx_disp_ctrl_res.MaximumMonitors = monitor_count
+        remotefx_disp_ctrl_res.MaximumScreenResolution = max_resolution
+        self._set_remotefx_vram(remotefx_disp_ctrl_res, vram_bytes)
 
-        self._jobutils.add_virt_resource(synth_3d_disp_ctrl_res, vm)
+        if new_wmi_obj:
+            self._jobutils.add_virt_resource(remotefx_disp_ctrl_res, vm)
+        else:
+            self._jobutils.modify_virt_resource(remotefx_disp_ctrl_res)
+
+    def _set_remotefx_vram(self, remotefx_disp_ctrl_res, vram_bytes):
+        pass
 
     def enable_remotefx_video_adapter(self, vm_name, monitor_count,
                                       max_resolution, vram_bytes=None):
-        vm = self._lookup_vm_check(vm_name, as_vssd=False)
-
         self._validate_remotefx_params(monitor_count, max_resolution,
                                        vram_bytes=vram_bytes)
 
+        vm = self._lookup_vm_check(vm_name)
         rasds = _wqlutils.get_element_associated_class(
             self._compat_conn, self._CIM_RES_ALLOC_SETTING_DATA_CLASS,
-            element_uuid=vm.Name)
-        if [r for r in rasds if r.ResourceSubType ==
-                self._SYNTH_3D_DISP_CTRL_RES_SUB_TYPE]:
-            raise exceptions.HyperVRemoteFXException(
-                _("RemoteFX is already configured for this VM"))
+            element_instance_id=vm.InstanceID)
 
         synth_disp_ctrl_res_list = [r for r in rasds if r.ResourceSubType ==
                                     self._SYNTH_DISP_CTRL_RES_SUB_TYPE]
         if synth_disp_ctrl_res_list:
+            # we need to remove the generic display controller first.
             self._jobutils.remove_virt_resource(synth_disp_ctrl_res_list[0])
 
+        remotefx_disp_ctrl_res = [r for r in rasds if r.ResourceSubType ==
+                                  self._REMOTEFX_DISP_CTRL_RES_SUB_TYPE]
+        remotefx_disp_ctrl_res = (remotefx_disp_ctrl_res[0]
+                                  if remotefx_disp_ctrl_res else None)
+
         max_res_value = self._remote_fx_res_map.get(max_resolution)
-        self._add_3d_display_controller(vm, monitor_count, max_res_value,
-                                        vram_bytes)
-        if self._vm_has_s3_controller(vm.ElementName):
+        self._set_remotefx_display_controller(
+            vm, remotefx_disp_ctrl_res, monitor_count, max_res_value,
+            vram_bytes)
+
+        if self._vm_has_s3_controller(vm_name):
             s3_disp_ctrl_res = [r for r in rasds if r.ResourceSubType ==
                                 self._S3_DISP_CTRL_RES_SUB_TYPE][0]
-            s3_disp_ctrl_res.Address = self._DISP_CTRL_ADDRESS_DX_11
+            if s3_disp_ctrl_res.Address != self._DISP_CTRL_ADDRESS_DX_11:
+                s3_disp_ctrl_res.Address = self._DISP_CTRL_ADDRESS_DX_11
+                self._jobutils.modify_virt_resource(s3_disp_ctrl_res)
+
+    def disable_remotefx_video_adapter(self, vm_name):
+        vm = self._lookup_vm_check(vm_name)
+        rasds = _wqlutils.get_element_associated_class(
+            self._compat_conn, self._CIM_RES_ALLOC_SETTING_DATA_CLASS,
+            element_instance_id=vm.InstanceID)
+
+        remotefx_disp_ctrl_res = [r for r in rasds if r.ResourceSubType ==
+                                  self._REMOTEFX_DISP_CTRL_RES_SUB_TYPE]
+
+        if not remotefx_disp_ctrl_res:
+            # VM does not have RemoteFX configured.
+            return
+
+        # we need to remove the RemoteFX display controller first.
+        self._jobutils.remove_virt_resource(remotefx_disp_ctrl_res[0])
+
+        synth_disp_ctrl_res = self._get_new_resource_setting_data(
+            self._SYNTH_DISP_CTRL_RES_SUB_TYPE,
+            self._SYNTH_DISP_ALLOCATION_SETTING_DATA_CLASS)
+        self._jobutils.add_virt_resource(synth_disp_ctrl_res, vm)
+
+        if self._vm_has_s3_controller(vm_name):
+            s3_disp_ctrl_res = [r for r in rasds if r.ResourceSubType ==
+                                self._S3_DISP_CTRL_RES_SUB_TYPE][0]
+            s3_disp_ctrl_res.Address = self._DISP_CTRL_ADDRESS
             self._jobutils.modify_virt_resource(s3_disp_ctrl_res)
 
     def _vm_has_s3_controller(self, vm_name):
@@ -1112,8 +1158,3 @@ class VMUtils(baseutils.BaseUtilsVirt):
             disk_path=disk_path, is_physical=is_physical)
         disk_resource.HostResource = [new_disk_path]
         self._jobutils.modify_virt_resource(disk_resource)
-
-    def _get_virtual_system_type(self, is_planned_vm):
-        return (
-            self._VIRTUAL_SYSTEM_TYPE_PLANNED if is_planned_vm
-            else self._VIRTUAL_SYSTEM_TYPE_REALIZED)
