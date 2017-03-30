@@ -287,7 +287,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
         virtual_system_type = self._get_virtual_system_type(is_planned_vm)
 
         vmsetting = self._lookup_vm_check(
-            vm_name, virtual_system_type=virtual_system_type)
+            vm_name, for_update=True, virtual_system_type=virtual_system_type)
 
         if host_shutdown_action:
             vmsetting.AutomaticShutdownAction = host_shutdown_action
