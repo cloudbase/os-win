@@ -279,7 +279,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
                   configuration_root_dir=None, snapshot_dir=None,
                   host_shutdown_action=None, vnuma_enabled=None,
                   is_planned_vm=False):
-        vmsetting = self._lookup_vm_check(vm_name)
+        vmsetting = self._lookup_vm_check(vm_name, for_update=True)
 
         if host_shutdown_action:
             vmsetting.AutomaticShutdownAction = host_shutdown_action
@@ -484,8 +484,17 @@ class VMUtils(baseutils.BaseUtilsVirt):
         res.Parent = drive_path
         res.HostResource = [path]
 
-        # Add the new vhd object as a virtual hard disk to the vm.
-        self._jobutils.add_virt_resource(res, vm)
+        try:
+            # Add the new vhd object as a virtual hard disk to the vm.
+            self._jobutils.add_virt_resource(res, vm)
+        except Exception:
+            LOG.exception(_LE("Failed to attach disk image %(disk_path)s "
+                              "to vm %(vm_name)s. Reverting attachment."),
+                          dict(disk_path=path, vm_name=vm_name))
+
+            drive = self._get_wmi_obj(drive_path)
+            self._jobutils.remove_virt_resource(drive)
+            raise
 
     def create_scsi_controller(self, vm_name):
         """Create an iscsi controller ready to mount volumes."""
