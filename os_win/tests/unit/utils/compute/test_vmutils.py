@@ -75,6 +75,7 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
         self._vmutils._conn_attr = mock.MagicMock()
         self._vmutils._jobutils = mock.MagicMock()
         self._vmutils._pathutils = mock.MagicMock()
+        self._jobutils = self._vmutils._jobutils
 
     def test_get_vm_summary_info(self):
         self._lookup_vm()
@@ -334,7 +335,8 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
 
         mock_get_virtual_system_type.assert_called_once_with(is_planned_vm)
         mock_lookup_vm_check.assert_called_once_with(
-            mock.sentinel.vm_name, virtual_system_type=virtual_system_type)
+            mock.sentinel.vm_name, for_update=True,
+            virtual_system_type=virtual_system_type)
         mock_set_mem.assert_called_once_with(
             mock_vmsettings, mock.sentinel.memory_mb,
             mock.sentinel.memory_per_numa, mock.sentinel.dynamic_mem_ratio)
@@ -491,6 +493,139 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
 
         mock_get_ide_ctrl.assert_called_with(mock_vm, self._FAKE_CTRL_ADDR)
         self.assertTrue(mock_get_new_rsd.called)
+
+    @ddt.data(constants.DISK, constants.DVD)
+    @mock.patch.object(vmutils.VMUtils, '_get_new_resource_setting_data')
+    def test_attach_drive(self, drive_type, mock_get_new_rsd):
+        mock_vm = self._lookup_vm()
+
+        mock_drive_res = mock.Mock()
+        mock_disk_res = mock.Mock()
+
+        mock_get_new_rsd.side_effect = [mock_drive_res, mock_disk_res]
+        self._jobutils.add_virt_resource.side_effect = [
+            [mock.sentinel.drive_res_path],
+            [mock.sentinel.disk_res_path]]
+
+        self._vmutils.attach_drive(mock.sentinel.vm_name,
+                                   mock.sentinel.disk_path,
+                                   mock.sentinel.ctrl_path,
+                                   mock.sentinel.drive_addr,
+                                   drive_type)
+
+        self._vmutils._lookup_vm_check.assert_called_once_with(
+            mock.sentinel.vm_name, as_vssd=False)
+
+        if drive_type == constants.DISK:
+            exp_res_sub_types = [self._vmutils._DISK_DRIVE_RES_SUB_TYPE,
+                                 self._vmutils._HARD_DISK_RES_SUB_TYPE]
+        else:
+            exp_res_sub_types = [self._vmutils._DVD_DRIVE_RES_SUB_TYPE,
+                                 self._vmutils._DVD_DISK_RES_SUB_TYPE]
+
+        mock_get_new_rsd.assert_has_calls(
+            [mock.call(exp_res_sub_types[0]),
+             mock.call(exp_res_sub_types[1],
+                       self._vmutils._STORAGE_ALLOC_SETTING_DATA_CLASS)])
+
+        self.assertEqual(mock.sentinel.ctrl_path, mock_drive_res.Parent)
+        self.assertEqual(mock.sentinel.drive_addr, mock_drive_res.Address)
+        self.assertEqual(mock.sentinel.drive_addr,
+                         mock_drive_res.AddressOnParent)
+
+        self.assertEqual(mock.sentinel.drive_res_path,
+                         mock_disk_res.Parent)
+        self.assertEqual([mock.sentinel.disk_path],
+                         mock_disk_res.HostResource)
+
+        self._jobutils.add_virt_resource.assert_has_calls(
+            [mock.call(mock_drive_res, mock_vm),
+             mock.call(mock_disk_res, mock_vm)])
+
+    @mock.patch.object(vmutils.VMUtils, '_get_wmi_obj')
+    @mock.patch.object(vmutils.VMUtils, '_get_new_resource_setting_data')
+    def test_attach_drive_exc(self, mock_get_new_rsd, mock_get_wmi_obj):
+        self._lookup_vm()
+
+        mock_drive_res = mock.Mock()
+        mock_disk_res = mock.Mock()
+
+        mock_get_new_rsd.side_effect = [mock_drive_res, mock_disk_res]
+        self._jobutils.add_virt_resource.side_effect = [
+            [mock.sentinel.drive_res_path],
+            exceptions.OSWinException]
+        mock_get_wmi_obj.return_value = mock.sentinel.attached_drive_res
+
+        self.assertRaises(exceptions.OSWinException,
+                          self._vmutils.attach_drive,
+                          mock.sentinel.vm_name,
+                          mock.sentinel.disk_path,
+                          mock.sentinel.ctrl_path,
+                          mock.sentinel.drive_addr,
+                          constants.DISK)
+
+        mock_get_wmi_obj.assert_called_once_with(mock.sentinel.drive_res_path)
+        self._jobutils.remove_virt_resource.assert_called_once_with(
+            mock.sentinel.attached_drive_res)
+
+    @mock.patch.object(vmutils.VMUtils,
+                       '_get_mounted_disk_resource_from_path')
+    def test_get_disk_attachment_info_detached(self, mock_get_disk_res):
+        mock_get_disk_res.return_value = None
+        self.assertRaises(exceptions.DiskNotFound,
+                          self._vmutils.get_disk_attachment_info,
+                          mock.sentinel.disk_path,
+                          mock.sentinel.is_physical)
+
+        mock_get_disk_res.assert_called_once_with(
+            mock.sentinel.disk_path,
+            mock.sentinel.is_physical)
+
+    @ddt.data(True, False)
+    @mock.patch.object(vmutils.VMUtils,
+                       '_get_mounted_disk_resource_from_path')
+    @mock.patch.object(vmutils.VMUtils,
+                       '_get_disk_controller_type')
+    @mock.patch.object(vmutils.VMUtils,
+                       '_get_wmi_obj')
+    def test_get_disk_attachment_info(self, is_physical,
+                                      mock_get_wmi_obj,
+                                      mock_get_disk_ctrl_type,
+                                      mock_get_disk_res):
+        mock_res = mock_get_disk_res.return_value
+        exp_res = mock_res if is_physical else mock_get_wmi_obj.return_value
+
+        fake_slot = 5
+        exp_res.AddressOnParent = str(fake_slot)
+
+        exp_att_info = dict(
+            controller_slot=fake_slot,
+            controller_path=exp_res.Parent,
+            controller_type=mock_get_disk_ctrl_type.return_value)
+
+        att_info = self._vmutils.get_disk_attachment_info(
+            mock.sentinel.disk_path,
+            is_physical)
+        self.assertEqual(exp_att_info, att_info)
+
+        if not is_physical:
+            mock_get_wmi_obj.assert_called_once_with(mock_res.Parent)
+        mock_get_disk_ctrl_type.assert_called_once_with(exp_res.Parent)
+
+    @ddt.data(vmutils.VMUtils._SCSI_CTRL_RES_SUB_TYPE,
+              vmutils.VMUtils._IDE_CTRL_RES_SUB_TYPE)
+    @mock.patch.object(vmutils.VMUtils, '_get_wmi_obj')
+    def test_get_disk_controller_type(self, res_sub_type, mock_get_wmi_obj):
+        mock_ctrl = mock_get_wmi_obj.return_value
+        mock_ctrl.ResourceSubType = res_sub_type
+
+        exp_ctrl_type = self._vmutils._disk_ctrl_type_mapping[res_sub_type]
+
+        ctrl_type = self._vmutils._get_disk_controller_type(
+            mock.sentinel.ctrl_path)
+        self.assertEqual(exp_ctrl_type, ctrl_type)
+
+        mock_get_wmi_obj.assert_called_once_with(mock.sentinel.ctrl_path)
 
     @mock.patch.object(vmutils.VMUtils, '_get_new_resource_setting_data')
     def test_create_scsi_controller(self, mock_get_new_rsd):
